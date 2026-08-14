@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>StreamPulse | Free Direct Video Extractor ($0 Host)</title>
+    <meta name="description" content="Extract direct high-speed video and audio download links from YouTube for free with 0 server bandwidth cost.">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <div class="background-glow"></div>
+    <div class="app-container">
+        <header class="header">
+            <div class="logo">
+                <div class="logo-icon">⚡</div>
+                <span class="logo-text">Stream<span class="highlight">Pulse</span></span>
+            </div>
+            <div class="badge-tag">
+                <span class="pulse-dot"></span> 0% Server Bandwidth • \$0/mo Cloud Tier
+            </div>
+        </header>
+
+        <main class="main-content">
+            <div class="hero">
+                <h1 class="hero-title">Extract Direct YouTube Stream Links</h1>
+                <p class="hero-subtitle">High-speed native browser downloads straight from YouTube's CDN. No server proxy, zero cost, no limits.</p>
+            </div>
+
+            <form id="extract-form" class="input-card">
+                <div class="input-wrapper">
+                    <svg class="search-icon" xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"></path>
+                        <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"></path>
+                    </svg>
+                    <input type="text" id="url-input" placeholder="Paste YouTube link (e.g., https://youtu.be/dQw4w9WgXcQ)" required autocomplete="off">
+                    <button type="button" id="paste-btn" class="icon-btn" title="Paste from clipboard">📋</button>
+                </div>
+                <button type="submit" id="submit-btn" class="btn-primary">
+                    <span class="btn-text">Extract Direct Links</span>
+                    <span class="spinner hidden"></span>
+                </button>
+            </form>
+
+            <div id="error-box" class="error-banner hidden">
+                <span class="error-icon">⚠️</span>
+                <span id="error-message">Failed to extract direct stream URL.</span>
+            </div>
+
+            <div id="result-card" class="result-card hidden">
+                <div class="video-preview-header">
+                    <div class="thumbnail-box">
+                        <img id="video-thumbnail" src="" alt="Video Thumbnail">
+                        <span id="video-duration" class="duration-badge">00:00</span>
+                    </div>
+                    <div class="video-info">
+                        <h2 id="video-title" class="video-title">Video Title Loading...</h2>
+                        <div class="video-meta">
+                            <span id="video-uploader" class="meta-item">Channel</span>
+                            <span class="dot-separator">•</span>
+                            <span id="video-views" class="meta-item">0 views</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="stream-sections">
+                    <div class="stream-group">
+                        <h3 class="group-title">📹 Combined Video & Audio Streams (Direct CDN)</h3>
+                        <div id="combined-streams-list" class="streams-grid"></div>
+                    </div>
+
+                    <div class="stream-group">
+                        <h3 class="group-title">🎵 Audio Only Streams</h3>
+                        <div id="audio-streams-list" class="streams-grid"></div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="arch-info">
+                <div class="info-item">
+                    <strong>Direct Extractor Pattern</strong>
+                    <span>Server extracts signed URL in &lt; 0.2s. Browser downloads 100% directly from YouTube CDN.</span>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/static/script.js"></script>
+</body>
+</html>
