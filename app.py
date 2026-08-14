@@ -21,8 +21,8 @@ logger = logging.getLogger("yt_extractor")
 
 app = FastAPI(
     title="YouTube Direct Link Extractor",
-    description="Multi-engine YouTube stream extractor with corrected InnerTube API clients",
-    version="4.1.0"
+    description="Multi-engine YouTube stream extractor with WEB_EMBEDDED_PLAYER & Cookie support",
+    version="4.2.0"
 )
 
 app.add_middleware(
@@ -67,7 +67,6 @@ def parse_cipher_url(cipher_str: str) -> Optional[str]:
     return None
 
 def fetch_innertube_client(video_id: str, client_name: str, client_version: str, extra_client_data: dict, user_agent: str) -> Dict[str, Any]:
-    """Execute request to YouTube InnerTube API using specified client payload."""
     endpoint = "https://www.youtube.com/youtubei/v1/player"
     
     client_ctx = {
@@ -83,6 +82,9 @@ def fetch_innertube_client(video_id: str, client_name: str, client_version: str,
             "client": client_ctx
         },
         "videoId": video_id,
+        "thirdParty": {
+            "embedUrl": f"https://www.youtube.com/embed/{video_id}"
+        },
         "contentCheckOk": True,
         "racyCheckOk": True
     }
@@ -92,7 +94,8 @@ def fetch_innertube_client(video_id: str, client_name: str, client_version: str,
         data=json.dumps(payload).encode('utf-8'),
         headers={
             'Content-Type': 'application/json',
-            'User-Agent': user_agent
+            'User-Agent': user_agent,
+            'Referer': f'https://www.youtube.com/embed/{video_id}'
         }
     )
     
@@ -164,10 +167,10 @@ def fetch_innertube_client(video_id: str, client_name: str, client_version: str,
         if not combined_streams and not audio_streams:
             raise Exception("No playable stream URLs returned")
 
-        logger.info(f"[[Success: {client_name}]] Extracted {len(combined_streams)} video & {len(audio_streams)} audio streams for {video_id}")
+        logger.info(f"[[Success: {client_name} Embedded]] Extracted {len(combined_streams)} video & {len(audio_streams)} audio streams for {video_id}")
         return {
             "success": True,
-            "engine": f"InnerTube_{client_name}",
+            "engine": f"InnerTube_{client_name}_Embedded",
             "title": title,
             "thumbnail": thumb_url,
             "duration": duration_str,
@@ -181,6 +184,12 @@ def fetch_innertube_client(video_id: str, client_name: str, client_version: str,
 
 def fetch_innertube_multi_client(video_id: str) -> Dict[str, Any]:
     client_configs = [
+        {
+            "name": "WEB_EMBEDDED_PLAYER",
+            "version": "5.20240801.01.00",
+            "extra": {},
+            "ua": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36"
+        },
         {
             "name": "IOS",
             "version": "19.29.1",
@@ -280,7 +289,7 @@ def extract_video_info(payload: ExtractRequest):
 
     errors = []
 
-    # Engine 1: Multi-Client InnerTube API (IOS / ANDROID_VR / TVHTML5 with contentCheckOk)
+    # Engine 1: Multi-Client InnerTube API (WEB_EMBEDDED_PLAYER / IOS / ANDROID_VR / TVHTML5)
     try:
         return fetch_innertube_multi_client(video_id)
     except Exception as e:
