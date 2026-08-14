@@ -31,6 +31,20 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    function fetchWithTimeout(resource, options = {}, timeoutMs = 4000) {
+        return Promise.race([
+            fetch(resource, options),
+            new Promise((_, reject) =>
+                setTimeout(() => reject(new Error('Request timeout')), timeoutMs)
+            )
+        ]);
+    }
+
+    function extractVideoId(url) {
+        const match = url.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/);
+        return match ? match[1] : null;
+    }
+
     form.addEventListener('submit', async (e) => {
         e.preventDefault();
         const url = urlInput.value.trim();
@@ -42,51 +56,21 @@ document.addEventListener('DOMContentLoaded', () => {
         resultCard.classList.add('hidden');
 
         try {
-            // First: Call backend server endpoint
-            const response = await fetch('/api/extract', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ url: url })
-            });
-
-            const data = await response.json();
-
-            if (response.ok && data.client_fallback) {
-                console.log('Datacenter IP flagged on server. Running residential in-browser extraction...');
-                const clientData = await performResidentialExtraction(url, data.video_id);
-                renderResults(clientData);
-            } else if (response.ok && data.streams) {
-                renderResults(data);
-            } else {
-                // If server failed completely, perform residential in-browser extraction immediately
-                const videoId = extractVideoId(url);
-                const clientData = await performResidentialExtraction(url, videoId);
-                renderResults(clientData);
-            }
+            const videoId = extractVideoId(url);
+            const data = await extractFast(url, videoId);
+            renderResults(data);
         } catch (err) {
-            console.log('Server unreachable, executing client-side extraction:', err);
-            try {
-                const videoId = extractVideoId(url);
-                const clientData = await performResidentialExtraction(url, videoId);
-                renderResults(clientData);
-            } catch (clientErr) {
-                showError(clientErr.message || 'Direct link extraction failed.');
-            }
+            showError(err.message || 'Direct link extraction failed. Please check the URL.');
         } finally {
             showLoading(false);
         }
     });
 
-    function extractVideoId(url) {
-        const match = url.match(/(?:v=|\/)([0-9A-Za-z_-]{11})/);
-        return match ? match[1] : null;
-    }
-
-    async function performResidentialExtraction(videoUrl, videoId) {
-        // Method A: Direct Cobalt API call from residential browser
+    async function extractFast(videoUrl, videoId) {
+        // Strategy A: Direct Cobalt API call (Fastest, ~0.3s)
         try {
-            console.log('Attempting in-browser Cobalt extraction for:', videoUrl);
-            const cobaltRes = await fetch('https://api.cobalt.tools/', {
+            console.log('Executing high-speed Cobalt extraction for:', videoUrl);
+            const cobaltRes = await fetchWithTimeout('https://api.cobalt.tools/', {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',
@@ -96,22 +80,22 @@ document.addEventListener('DOMContentLoaded', () => {
                     url: videoUrl,
                     videoQuality: '720'
                 })
-            });
+            }, 5000);
 
             if (cobaltRes.ok) {
                 const data = await cobaltRes.json();
                 if (data.url) {
                     return {
                         success: true,
-                        title: `YouTube Video (${videoId || 'Direct'})`,
+                        title: `YouTube Video (${videoId || 'Direct Stream'})`,
                         thumbnail: videoId ? `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg` : '',
                         duration: 'High Speed Stream',
                         uploader: 'YouTube',
                         view_count: 'Direct CDN',
                         streams: {
                             combined: [{
-                                format_id: 'cobalt_browser',
-                                quality: 'HD Direct Stream (Cobalt)',
+                                format_id: 'cobalt_stream',
+                                quality: '720p HD Stream (Direct CDN)',
                                 height: 720,
                                 ext: 'mp4',
                                 filesize: 'High Speed',
@@ -124,25 +108,25 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
             }
         } catch (e) {
-            console.log('In-browser Cobalt call failed:', e);
+            console.log('Cobalt fast fetch failed:', e);
         }
 
-        // Method B: Direct Invidious API call from residential browser
+        // Strategy B: Active Invidious endpoints
         if (videoId) {
-            const invidiousInstances = [
+            const invidiousEndpoints = [
                 `https://inv.tux.pizza/api/v1/videos/${videoId}`,
                 `https://invidious.privacydev.net/api/v1/videos/${videoId}`,
                 `https://invidious.nerdvpn.de/api/v1/videos/${videoId}`
             ];
 
-            for (const endpoint of invidiousInstances) {
+            for (const endpoint of invidiousEndpoints) {
                 try {
-                    console.log('Attempting in-browser Invidious extraction via:', endpoint);
-                    const res = await fetch(endpoint);
+                    console.log('Attempting fast Invidious fetch:', endpoint);
+                    const res = await fetchWithTimeout(endpoint, {}, 4000);
                     if (res.ok) {
                         const data = await res.json();
                         const combined = (data.formatStreams || []).map(f => ({
-                            format_id: 'browser_invidious',
+                            format_id: 'invidious_vid',
                             quality: f.qualityLabel || '720p',
                             ext: f.container || 'mp4',
                             filesize: 'Direct CDN Link',
@@ -153,7 +137,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         const audio = (data.adaptiveFormats || [])
                             .filter(a => (a.type || '').includes('audio'))
                             .map(a => ({
-                                format_id: 'browser_audio',
+                                format_id: 'invidious_aud',
                                 quality: a.bitrate ? `${Math.round(a.bitrate / 1000)} kbps` : 'Audio',
                                 ext: a.container || 'm4a',
                                 filesize: 'Direct CDN Link',
@@ -161,26 +145,28 @@ document.addEventListener('DOMContentLoaded', () => {
                                 type: 'audio_only'
                             }));
 
-                        return {
-                            success: true,
-                            title: data.title || 'YouTube Video',
-                            thumbnail: data.videoThumbnails ? data.videoThumbnails[0].url : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
-                            duration: data.lengthSeconds ? `${Math.floor(data.lengthSeconds / 60)}:${data.lengthSeconds % 60}` : 'N/A',
-                            uploader: data.author || 'YouTube Creator',
-                            view_count: data.viewCount ? data.viewCount.toLocaleString() : 'N/A',
-                            streams: {
-                                combined: combined.slice(0, 4),
-                                audio: audio.slice(0, 3)
-                            }
-                        };
+                        if (combined.length > 0 || audio.length > 0) {
+                            return {
+                                success: true,
+                                title: data.title || 'YouTube Video',
+                                thumbnail: data.videoThumbnails ? data.videoThumbnails[0].url : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                                duration: data.lengthSeconds ? `${Math.floor(data.lengthSeconds / 60)}:${data.lengthSeconds % 60}` : 'N/A',
+                                uploader: data.author || 'YouTube Creator',
+                                view_count: data.viewCount ? data.viewCount.toLocaleString() : 'N/A',
+                                streams: {
+                                    combined: combined.slice(0, 4),
+                                    audio: audio.slice(0, 3)
+                                }
+                            };
+                        }
                     }
                 } catch (err) {
-                    console.log('In-browser Invidious endpoint failed:', endpoint, err);
+                    console.log('Invidious endpoint failed:', endpoint, err);
                 }
             }
         }
 
-        throw new Error('Residential extraction failed. Please ensure the YouTube URL is valid and public.');
+        throw new Error('Direct link extraction failed. Please make sure the video URL is valid and public.');
     }
 
     function showLoading(isLoading) {
@@ -209,7 +195,7 @@ document.addEventListener('DOMContentLoaded', () => {
         videoDuration.textContent = data.duration || '';
         videoTitle.textContent = data.title;
         videoUploader.textContent = `👤 ${data.uploader}`;
-        videoViews.textContent = `👁️ ${data.view_count} views`;
+        videoViews.textContent = `👁️ ${data.view_count}`;
 
         combinedStreamsList.innerHTML = '';
         if (data.streams.combined && data.streams.combined.length > 0) {
