@@ -21,8 +21,8 @@ logger = logging.getLogger("yt_extractor")
 
 app = FastAPI(
     title="YouTube Direct Link Extractor",
-    description="Multi-engine YouTube stream extractor with InnerTube API & detailed diagnostic logging",
-    version="4.0.0"
+    description="Multi-engine YouTube stream extractor with corrected InnerTube API clients",
+    version="4.1.0"
 )
 
 app.add_middleware(
@@ -53,7 +53,6 @@ def extract_video_id(url: str) -> Optional[str]:
     return None
 
 def parse_cipher_url(cipher_str: str) -> Optional[str]:
-    """Parse signatureCipher parameter if present in InnerTube stream data."""
     try:
         parsed = urllib.parse.parse_qs(cipher_str)
         url = parsed.get('url', [None])[0]
@@ -67,22 +66,25 @@ def parse_cipher_url(cipher_str: str) -> Optional[str]:
         logger.warning(f"Failed to parse cipher string: {e}")
     return None
 
-def fetch_innertube_android_api(video_id: str) -> Dict[str, Any]:
-    """Direct call to YouTube's official Android InnerTube API."""
-    logger.info(f"[[Engine 1]] Requesting YouTube InnerTube Android API for video_id: {video_id}")
-    
+def fetch_innertube_client(video_id: str, client_name: str, client_version: str, extra_client_data: dict, user_agent: str) -> Dict[str, Any]:
+    """Execute request to YouTube InnerTube API using specified client payload."""
     endpoint = "https://www.youtube.com/youtubei/v1/player"
+    
+    client_ctx = {
+        "clientName": client_name,
+        "clientVersion": client_version,
+        "hl": "en",
+        "gl": "US"
+    }
+    client_ctx.update(extra_client_data)
+    
     payload = {
         "context": {
-            "client": {
-                "clientName": "ANDROID",
-                "clientVersion": "19.05.36",
-                "androidSdkVersion": 34,
-                "hl": "en",
-                "gl": "US"
-            }
+            "client": client_ctx
         },
-        "videoId": video_id
+        "videoId": video_id,
+        "contentCheckOk": True,
+        "racyCheckOk": True
     }
     
     req = urllib.request.Request(
@@ -90,13 +92,13 @@ def fetch_innertube_android_api(video_id: str) -> Dict[str, Any]:
         data=json.dumps(payload).encode('utf-8'),
         headers={
             'Content-Type': 'application/json',
-            'User-Agent': 'com.google.android.youtube/19.05.36 (Linux; U; Android 14; en_US)'
+            'User-Agent': user_agent
         }
     )
     
     with urllib.request.urlopen(req, timeout=6) as resp:
         if resp.status != 200:
-            raise Exception(f"InnerTube API returned HTTP status {resp.status}")
+            raise Exception(f"InnerTube status {resp.status}")
         
         data = json.loads(resp.read().decode('utf-8'))
         playability = data.get('playabilityStatus', {})
@@ -104,7 +106,7 @@ def fetch_innertube_android_api(video_id: str) -> Dict[str, Any]:
         
         if status != 'OK':
             reason = playability.get('reason', 'Playability status not OK')
-            raise Exception(f"YouTube InnerTube error: {status} - {reason}")
+            raise Exception(f"YouTube status {status}: {reason}")
             
         details = data.get('videoDetails', {})
         title = details.get('title', f'YouTube Video ({video_id})')
@@ -160,12 +162,12 @@ def fetch_innertube_android_api(video_id: str) -> Dict[str, Any]:
         combined_streams.sort(key=lambda x: x.get('height', 0), reverse=True)
 
         if not combined_streams and not audio_streams:
-            raise Exception("No playable stream URLs returned from InnerTube API")
+            raise Exception("No playable stream URLs returned")
 
-        logger.info(f"[[Engine 1 Success]] Extracted {len(combined_streams)} video & {len(audio_streams)} audio streams for {video_id}")
+        logger.info(f"[[Success: {client_name}]] Extracted {len(combined_streams)} video & {len(audio_streams)} audio streams for {video_id}")
         return {
             "success": True,
-            "engine": "InnerTube_Android",
+            "engine": f"InnerTube_{client_name}",
             "title": title,
             "thumbnail": thumb_url,
             "duration": duration_str,
@@ -177,8 +179,47 @@ def fetch_innertube_android_api(video_id: str) -> Dict[str, Any]:
             }
         }
 
+def fetch_innertube_multi_client(video_id: str) -> Dict[str, Any]:
+    client_configs = [
+        {
+            "name": "IOS",
+            "version": "19.29.1",
+            "extra": {"deviceMake": "Apple", "deviceModel": "iPhone16,2", "osName": "iOS", "osVersion": "17.5.1"},
+            "ua": "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X; en_US)"
+        },
+        {
+            "name": "ANDROID_VR",
+            "version": "1.59.19",
+            "extra": {"deviceMake": "Oculus", "deviceModel": "Quest 3", "osName": "Android", "osVersion": "12"},
+            "ua": "Mozilla/5.0 (Linux; Android 12; Quest 3) AppleWebKit/537.36 (KHTML, like Gecko) OculusBrowser/32.0.0.8.18 Mobile Safari/537.36"
+        },
+        {
+            "name": "TVHTML5",
+            "version": "7.20240801.00.00",
+            "extra": {},
+            "ua": "Mozilla/5.0 (SmartHub; SMART-TV; U; Linux/SmartTV) AppleWebKit/537.42 (KHTML, like Gecko) SmartTV Safari/537.42"
+        }
+    ]
+
+    last_err = None
+    for config in client_configs:
+        try:
+            logger.info(f"[[Engine 1]] Trying InnerTube client payload: {config['name']}")
+            return fetch_innertube_client(
+                video_id,
+                config['name'],
+                config['version'],
+                config['extra'],
+                config['ua']
+            )
+        except Exception as e:
+            last_err = e
+            logger.warning(f"InnerTube client {config['name']} failed: {e}")
+            continue
+
+    raise last_err or Exception("All InnerTube client payloads failed")
+
 def fetch_ytdlp_with_cookies(url: str) -> Dict[str, Any]:
-    """Engine 2: yt-dlp using YOUTUBE_COOKIES_TEXT if provided on Render env."""
     cookies_text = os.getenv("YOUTUBE_COOKIES_TEXT")
     if not cookies_text:
         raise Exception("YOUTUBE_COOKIES_TEXT environment variable not configured")
@@ -239,15 +280,15 @@ def extract_video_info(payload: ExtractRequest):
 
     errors = []
 
-    # Attempt Engine 1: InnerTube Android API
+    # Engine 1: Multi-Client InnerTube API (IOS / ANDROID_VR / TVHTML5 with contentCheckOk)
     try:
-        return fetch_innertube_android_api(video_id)
+        return fetch_innertube_multi_client(video_id)
     except Exception as e:
-        err_msg = f"Engine 1 (InnerTube Android) failed: {str(e)}"
+        err_msg = f"Engine 1 (InnerTube Multi-Client) failed: {str(e)}"
         logger.warning(err_msg)
         errors.append(err_msg)
 
-    # Attempt Engine 2: yt-dlp with YOUTUBE_COOKIES_TEXT
+    # Engine 2: yt-dlp with YOUTUBE_COOKIES_TEXT
     try:
         return fetch_ytdlp_with_cookies(url)
     except Exception as e:
@@ -255,7 +296,6 @@ def extract_video_info(payload: ExtractRequest):
         logger.warning(err_msg)
         errors.append(err_msg)
 
-    # If all engines fail, log exact diagnostic summary
     error_summary = " | ".join(errors)
     logger.error(f"=== Extraction Failed for video_id {video_id}. Diagnostic trace: {error_summary} ===")
     raise HTTPException(
