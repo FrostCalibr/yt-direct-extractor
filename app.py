@@ -17,8 +17,8 @@ logger = logging.getLogger("yt_extractor")
 
 app = FastAPI(
     title="YouTube Direct Link Extractor",
-    description="Zero-bandwidth serverless video direct link extractor powered by yt-dlp & Piped fallback",
-    version="1.3.0"
+    description="Zero-bandwidth video link extractor with active Invidious & Cobalt multi-fallback",
+    version="1.4.0"
 )
 
 app.add_middleware(
@@ -38,7 +38,7 @@ def health_check():
 
 def format_bytes(size: Optional[int]) -> str:
     if not size:
-        return "Unknown size"
+        return "Direct Stream"
     for unit in ['B', 'KB', 'MB', 'GB']:
         if abs(size) < 1024.0:
             return f"{size:.1f} {unit}"
@@ -66,92 +66,135 @@ def extract_video_id(url: str) -> Optional[str]:
             return match.group(1)
     return None
 
-def fetch_piped_fallback(video_id: str) -> Dict[str, Any]:
-    """Fallback extraction using public Piped / Invidious instances when datacenter IP is blocked."""
-    piped_instances = [
-        f"https://pipedapi.kavin.rocks/streams/{video_id}",
-        f"https://api.piped.video/streams/{video_id}",
-        f"https://piped-api.garudalinux.org/streams/{video_id}"
+def fetch_invidious_fallback(video_id: str) -> Dict[str, Any]:
+    """Fallback extraction using active Invidious instances."""
+    invidious_instances = [
+        f"https://inv.tux.pizza/api/v1/videos/{video_id}",
+        f"https://invidious.privacydev.net/api/v1/videos/{video_id}",
+        f"https://invidious.nerdvpn.de/api/v1/videos/{video_id}",
+        f"https://invidious.drgns.space/api/v1/videos/{video_id}"
     ]
 
-    for instance_url in piped_instances:
+    for instance_url in invidious_instances:
         try:
-            logger.info(f"Attempting fallback stream extraction via Piped instance: {instance_url}")
+            logger.info(f"Attempting fallback via Invidious API: {instance_url}")
             req = urllib.request.Request(
                 instance_url,
                 headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
             )
-            with urllib.request.urlopen(req, timeout=6) as response:
+            with urllib.request.urlopen(req, timeout=5) as response:
                 if response.status == 200:
                     data = json.loads(response.read().decode('utf-8'))
                     
                     combined_streams = []
                     audio_streams = []
 
-                    # Parse video streams
-                    for v in data.get('videoStreams', []):
-                        if v.get('url') and v.get('quality'):
+                    for format_item in data.get('formatStreams', []):
+                        if format_item.get('url') and format_item.get('qualityLabel'):
+                            res_val = format_item.get('height', 0)
                             combined_streams.append({
-                                "format_id": "piped_video",
-                                "quality": v.get('quality'),
-                                "height": int(v.get('quality', '0p').replace('p', '')) if 'p' in str(v.get('quality')) else 0,
-                                "ext": v.get('format', 'mp4').lower(),
+                                "format_id": "invidious_video",
+                                "quality": format_item.get('qualityLabel'),
+                                "height": res_val,
+                                "ext": format_item.get('container', 'mp4'),
                                 "filesize": "Direct Stream",
-                                "direct_url": v.get('url'),
+                                "direct_url": format_item.get('url'),
                                 "type": "video_audio"
                             })
 
-                    # Parse audio streams
-                    for a in data.get('audioStreams', []):
-                        if a.get('url'):
-                            bitrate = a.get('bitrate')
-                            quality_label = f"{int(bitrate / 1000)} kbps" if bitrate else "Audio"
+                    for audio_item in data.get('adaptiveFormats', []):
+                        if audio_item.get('url') and 'audio' in audio_item.get('type', ''):
+                            bitrate = audio_item.get('bitrate')
+                            quality_label = f"{int(int(bitrate) / 1000)} kbps" if bitrate else "Audio"
                             audio_streams.append({
-                                "format_id": "piped_audio",
+                                "format_id": "invidious_audio",
                                 "quality": quality_label,
-                                "ext": a.get('format', 'm4a').lower(),
+                                "ext": audio_item.get('container', 'm4a'),
                                 "filesize": "Direct Stream",
-                                "direct_url": a.get('url'),
+                                "direct_url": audio_item.get('url'),
                                 "type": "audio_only"
                             })
 
                     combined_streams.sort(key=lambda x: x.get('height', 0), reverse=True)
 
-                    return {
-                        "success": True,
-                        "title": data.get('title', 'YouTube Video'),
-                        "thumbnail": data.get('thumbnailUrl'),
-                        "duration": format_duration(data.get('duration')),
-                        "uploader": data.get('uploader', 'YouTube Creator'),
-                        "view_count": f"{data.get('views', 0):,}" if data.get('views') else "N/A",
-                        "streams": {
-                            "combined": combined_streams[:4],
-                            "audio": audio_streams[:3]
+                    if combined_streams or audio_streams:
+                        return {
+                            "success": True,
+                            "title": data.get('title', 'YouTube Video'),
+                            "thumbnail": data.get('videoThumbnails', [{}])[0].get('url') if data.get('videoThumbnails') else None,
+                            "duration": format_duration(data.get('lengthSeconds')),
+                            "uploader": data.get('author', 'YouTube Creator'),
+                            "view_count": f"{data.get('viewCount', 0):,}" if data.get('viewCount') else "N/A",
+                            "streams": {
+                                "combined": combined_streams[:4],
+                                "audio": audio_streams[:3]
+                            }
                         }
-                    }
         except Exception as e:
-            logger.warning(f"Piped instance {instance_url} failed: {e}")
+            logger.warning(f"Invidious instance {instance_url} failed: {e}")
             continue
 
-    raise Exception("All datacenter bypass strategies and fallback instances were unreachable.")
+    raise Exception("Invidious fallback unreachable.")
 
-def extract_with_yt_dlp(url: str) -> Dict[str, Any]:
-    # Check if YOUTUBE_COOKIES_TEXT env var is supplied
-    cookies_text = os.getenv("YOUTUBE_COOKIES_TEXT")
-    cookies_path = "/tmp/youtube_cookies.txt"
-    
-    if cookies_text:
-        with open(cookies_path, "w") as f:
-            f.write(cookies_text)
+def fetch_cobalt_fallback(video_id: str) -> Dict[str, Any]:
+    """Fallback extraction using Cobalt API."""
+    try:
+        cobalt_url = "https://api.cobalt.tools/"
+        payload = json.dumps({"url": f"https://www.youtube.com/watch?v={video_id}"}).encode('utf-8')
+        req = urllib.request.Request(
+            cobalt_url,
+            data=payload,
+            headers={
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+                'User-Agent': 'Mozilla/5.0'
+            }
+        )
+        with urllib.request.urlopen(req, timeout=5) as response:
+            if response.status in [200, 201]:
+                data = json.loads(response.read().decode('utf-8'))
+                direct_link = data.get('url')
+                if direct_link:
+                    return {
+                        "success": True,
+                        "title": f"YouTube Video ({video_id})",
+                        "thumbnail": f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
+                        "duration": "N/A",
+                        "uploader": "YouTube",
+                        "view_count": "N/A",
+                        "streams": {
+                            "combined": [{
+                                "format_id": "cobalt_direct",
+                                "quality": "Best Stream (Cobalt)",
+                                "height": 720,
+                                "ext": "mp4",
+                                "filesize": "Direct Stream",
+                                "direct_url": direct_link,
+                                "type": "video_audio"
+                            }],
+                            "audio": []
+                        }
+                    }
+    except Exception as e:
+        logger.warning(f"Cobalt API failed: {e}")
 
+    raise Exception("Cobalt fallback unreachable.")
+
+@app.post("/api/extract")
+def extract_video_info(payload: ExtractRequest):
+    url = payload.url.strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="URL cannot be empty")
+
+    video_id = extract_video_id(url)
+
+    # Strategy 1: yt-dlp
     client_strategies = [
         ['ios', 'android'],
         ['mweb', 'web_creator'],
         ['tvhtml5', 'android_vr'],
         ['web']
     ]
-
-    last_error = None
 
     for clients in client_strategies:
         ydl_opts = {
@@ -170,11 +213,7 @@ def extract_with_yt_dlp(url: str) -> Dict[str, Any]:
             }
         }
 
-        if os.path.exists(cookies_path):
-            ydl_opts['cookiefile'] = cookies_path
-
         try:
-            logger.info(f"Attempting yt-dlp extraction with player clients: {clients}")
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 if info:
@@ -224,41 +263,45 @@ def extract_with_yt_dlp(url: str) -> Dict[str, Any]:
 
                     combined_streams.sort(key=lambda x: x.get('height', 0), reverse=True)
 
-                    return {
-                        "success": True,
-                        "title": info.get('title', 'YouTube Video'),
-                        "thumbnail": info.get('thumbnail'),
-                        "duration": format_duration(info.get('duration')),
-                        "uploader": info.get('uploader', 'Unknown Creator'),
-                        "view_count": f"{info.get('view_count', 0):,}" if info.get('view_count') else "N/A",
-                        "streams": {
-                            "combined": combined_streams[:4],
-                            "audio": audio_streams[:3]
+                    if combined_streams or audio_streams:
+                        return {
+                            "success": True,
+                            "title": info.get('title', 'YouTube Video'),
+                            "thumbnail": info.get('thumbnail'),
+                            "duration": format_duration(info.get('duration')),
+                            "uploader": info.get('uploader', 'Unknown Creator'),
+                            "view_count": f"{info.get('view_count', 0):,}" if info.get('view_count') else "N/A",
+                            "streams": {
+                                "combined": combined_streams[:4],
+                                "audio": audio_streams[:3]
+                            }
                         }
-                    }
-        except Exception as e:
-            last_error = e
-            logger.warning(f"yt-dlp strategy {clients} failed: {e}")
+        except Exception:
+            continue
 
-    # If all yt-dlp strategies fail due to bot verification, trigger Piped fallback
-    video_id = extract_video_id(url)
+    # Strategy 2: Invidious API
     if video_id:
-        logger.info(f"yt-dlp failed on datacenter IP. Triggering Piped fallback for video_id: {video_id}")
-        return fetch_piped_fallback(video_id)
+        try:
+            return fetch_invidious_fallback(video_id)
+        except Exception as e:
+            logger.warning(f"Invidious fallback failed: {e}")
 
-    raise last_error or Exception("Could not extract video info.")
+    # Strategy 3: Cobalt API
+    if video_id:
+        try:
+            return fetch_cobalt_fallback(video_id)
+        except Exception as e:
+            logger.warning(f"Cobalt fallback failed: {e}")
 
-@app.post("/api/extract")
-def extract_video_info(payload: ExtractRequest):
-    url = payload.url.strip()
-    if not url:
-        raise HTTPException(status_code=400, detail="URL cannot be empty")
+    # Strategy 4: Return client fallback instruction for browser residential fetch
+    if video_id:
+        return {
+            "success": True,
+            "client_fallback": True,
+            "video_id": video_id
+        }
 
-    try:
-        return extract_with_yt_dlp(url)
-    except Exception as e:
-        logger.error(f"Extraction failed: {e}")
-        raise HTTPException(status_code=400, detail=f"Extraction failed: {str(e)}")
+    raise HTTPException(status_code=400, detail="Could not extract video links.")
 
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.exists(static_dir):

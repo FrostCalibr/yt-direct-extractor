@@ -54,13 +54,73 @@ document.addEventListener('DOMContentLoaded', () => {
                 throw new Error(data.detail || 'Failed to extract video links.');
             }
 
-            renderResults(data);
+            if (data.client_fallback && data.video_id) {
+                console.log('Server requested client-side residential extraction for video:', data.video_id);
+                const clientData = await extractFromClient(data.video_id);
+                renderResults(clientData);
+            } else {
+                renderResults(data);
+            }
         } catch (err) {
             showError(err.message);
         } finally {
             showLoading(false);
         }
     });
+
+    async function extractFromClient(videoId) {
+        const invidiousInstances = [
+            `https://inv.tux.pizza/api/v1/videos/${videoId}`,
+            `https://invidious.privacydev.net/api/v1/videos/${videoId}`,
+            `https://invidious.nerdvpn.de/api/v1/videos/${videoId}`,
+            `https://invidious.drgns.space/api/v1/videos/${videoId}`
+        ];
+
+        for (const endpoint of invidiousInstances) {
+            try {
+                const res = await fetch(endpoint);
+                if (res.ok) {
+                    const data = await res.json();
+                    const combined = (data.formatStreams || []).map(f => ({
+                        format_id: 'client_vid',
+                        quality: f.qualityLabel || '720p',
+                        ext: f.container || 'mp4',
+                        filesize: 'Direct Stream',
+                        direct_url: f.url,
+                        type: 'video_audio'
+                    }));
+
+                    const audio = (data.adaptiveFormats || [])
+                        .filter(a => (a.type || '').includes('audio'))
+                        .map(a => ({
+                            format_id: 'client_aud',
+                            quality: a.bitrate ? `${Math.round(a.bitrate / 1000)} kbps` : 'Audio',
+                            ext: a.container || 'm4a',
+                            filesize: 'Direct Stream',
+                            direct_url: a.url,
+                            type: 'audio_only'
+                        }));
+
+                    return {
+                        success: true,
+                        title: data.title || 'YouTube Video',
+                        thumbnail: data.videoThumbnails ? data.videoThumbnails[0].url : `https://i.ytimg.com/vi/${videoId}/hqdefault.jpg`,
+                        duration: data.lengthSeconds ? `${Math.floor(data.lengthSeconds / 60)}:${data.lengthSeconds % 60}` : 'N/A',
+                        uploader: data.author || 'YouTube Creator',
+                        view_count: data.viewCount ? data.viewCount.toLocaleString() : 'N/A',
+                        streams: {
+                            combined: combined.slice(0, 4),
+                            audio: audio.slice(0, 3)
+                        }
+                    };
+                }
+            } catch (e) {
+                console.log('Client fetch failed for endpoint:', endpoint, e);
+            }
+        }
+
+        throw new Error('Direct link extraction failed on all servers and client endpoints.');
+    }
 
     function showLoading(isLoading) {
         if (isLoading) {
